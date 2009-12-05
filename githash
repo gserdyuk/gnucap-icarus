@@ -1,0 +1,3 @@
+#!/bin/bash
+#echo "#define GITHASH" \"`git show |head -n 1| cut -d" " -f2`\" >./src/githash.h
+echo "#define GITHASH" \" githash `git rev-parse HEAD`\" |tee  ./src/githash.h

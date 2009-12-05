@@ -1,0 +1,13 @@
+
+IVL_HOME=/usr/local/bin
+
+all: netlist-dkc.vvp bindsigs.vpi
+
+netlist-dkc.vvp: netlist-dkc.v
+	$(IVL_HOME)/iverilog -I/usr/local/lib/ivl -o $@ $<
+
+bindsigs.vpi: bindsigs.cc
+	$(IVL_HOME)/iverilog-vpi -I../../icarus/verilog/vvp $<
+
+run:
+	gnucap -c verilog netlist-dkc.sp

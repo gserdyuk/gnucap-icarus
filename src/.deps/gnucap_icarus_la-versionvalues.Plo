@@ -1,0 +1,6 @@
+gnucap_icarus_la-versionvalues.lo gnucap_icarus_la-versionvalues.o:  \
+ versionvalues.cc versionstamp.h githash.h
+
+versionstamp.h:
+
+githash.h:

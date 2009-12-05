@@ -1,0 +1,29 @@
+# Makeicarus  - Makefile for Icarus Plugin
+all: lib
+
+LIB_SRCS = \
+bm_extpwl.cc s_exttr.cc extlib.cc versionvalues.cc
+
+LIB_H 	 = \
+extlib.h
+
+LIB_OBJS = ${LIB_SRCS:.cc=.o}
+
+INCPATH	 = -I../icarus/verilog/vvp -I/usr/local/include/iverilog -I../../src
+CFLAGS   = -Wall -O2 -g -fPIC -UDEBUG $(INCPATH)
+CXXFLAGS = $(CFLAGS)
+LDFLAGS	 = -rdynamic -shared
+CXX	 = g++
+CC	 = gcc
+LD	 = g++
+
+.cc.o: 
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+lib:  ../gnucap-icarus.so
+	
+../gnucap-icarus.so: $(LIB_OBJS)
+	$(LD) $(LDFLAGS) $(LIB_OBJS) -o $@ 
+	
+clean:
+	rm ../gnucap-icarus.so *.o 

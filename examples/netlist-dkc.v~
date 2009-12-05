@@ -1,0 +1,36 @@
+`timescale 1ns/1ps
+
+module inv__a (out,in);
+   input in;
+   output out;
+endmodule
+
+module inv__d (out,in);
+   input in;
+   output out;
+   reg 	  out;   
+
+   parameter mode        = 0;
+   parameter gate_delay  = 0;
+   parameter init_v      = 0.0;
+   parameter rise        = 70e-12;
+   parameter vdd         = 3.0;
+   parameter vss         = 0.0;
+
+   initial $bindsigs(in,out);
+   always @(out) $sync_out(out);
+      
+   always @(in)
+     out <= #5 in;
+   
+endmodule
+
+module _;
+
+   inv__a x1 (n1,n2);
+   inv__d x2 (n2,n3);
+   inv__a x3 (n3,n4);
+   inv__d x4 (n4,n5);
+   inv__a x5 (n5,n1);
+
+endmodule // top

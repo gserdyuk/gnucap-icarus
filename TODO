@@ -1,0 +1,19 @@
+Gnucap-Icarus cosimulation plugin
+ToDo list:
+
+
+1. Get rid of method EVAL_BM_EXTPWL::voltage()
+instead of using this method, gnucap measurement shall be used (as far as  
+understanded now). Consequently - remove all what si related to ::voltage().
+
+2. Make EVAL_BM_EXTPWL derived from EVAL_BM_PWL
+
+3. make more usage examples
+
+4. Minor fixes:
+  o Move to gnucap-2009-10-11
+  o complete GNU BUILD (.so lib is not build yet using GNU Build system)
+  + fix KevinC's changes in Makefiles
+
+5. Icarus/Verilog is modified. 
+   Make that changes "movable" to icarus/verilog upstream 
