@@ -59,9 +59,11 @@ private: // override virtual
   COMMON_COMPONENT* clone()const	{return new EVAL_BM_EXTPWL(*this);}
   void		print_common_obsolete_callback(OMSTREAM&, LANGUAGE*)const;
 
+  void		precalc_first(const CARD_LIST*);
   //void  	expand(const COMPONENT*);//COMPONENT_COMMON/nothing
   //COMMON_COMPONENT* deflate();	 //COMPONENT_COMMON/nothing
-  void		precalc(const CARD_LIST*);
+  void		precalc_last(const CARD_LIST*);
+  /// gs - 2remove void		precalc(const CARD_LIST*);
 
   void		tr_eval(ELEMENT*)const;
   //void	ac_eval(ELEMENT*)const; //EVAL_BM_ACTION_BASE
@@ -126,20 +128,30 @@ void EVAL_BM_EXTPWL::print_common_obsolete_callback(OMSTREAM& o, LANGUAGE* lang)
   EVAL_BM_ACTION_BASE::print_common_obsolete_callback(o, lang);
 }
 /*--------------------------------------------------------------------------*/
-void EVAL_BM_EXTPWL::precalc(const CARD_LIST* Scope)
+void EVAL_BM_EXTPWL::precalc_first(const CARD_LIST* Scope)
 {
   assert(Scope);
-  EVAL_BM_ACTION_BASE::precalc(Scope);
+  EVAL_BM_ACTION_BASE::precalc_first(Scope);
   _delta.e_val(_default_delta, Scope);
   _smooth.e_val(_default_smooth, Scope);
   if (_ext) {
       _ext = (intptr_t)bindExtSigConnect(_ext, _ext.string(), Scope, this);
   }
-  double last = -BIGBIG;
   for (std::vector<std::pair<PARAMETER<double>,PARAMETER<double> > >::iterator
 	 p = _raw_table.begin();  p != _raw_table.end();  ++p) {
     p->first.e_val(0, Scope);
     p->second.e_val(0, Scope);
+  }
+}
+/*--------------------------------------------------------------------------*/
+void EVAL_BM_EXTPWL::precalc_last(const CARD_LIST* Scope)
+{
+  assert(Scope);
+  EVAL_BM_ACTION_BASE::precalc_last(Scope);
+
+  double last = -BIGBIG;
+  for (std::vector<std::pair<PARAMETER<double>,PARAMETER<double> > >::iterator
+	 p = _raw_table.begin();  p != _raw_table.end();  ++p) {
     if (last > p->first) {
       throw Exception_Precalc("PWL is out of order: (" + to_string(last)
 			      + ", " + to_string(p->first) + ")\n");

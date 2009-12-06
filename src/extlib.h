@@ -78,7 +78,11 @@ class ExtLib : public ExtAPI , public COMPONENT {
 
  private:
   ExtLib();
+
+ public:
+  virtual std::string port_name(int)const {return "";}
 };
+
 class ELEMENT;
 class ExtSig : public ExtBase {
  public:
@@ -101,6 +105,7 @@ class ExtSig : public ExtBase {
 
  private:
   ExtSig();
+
 };
 
 class ExtRef : public ExtBase {

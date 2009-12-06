@@ -16,15 +16,7 @@ bindsigs.vpi: bindsigs.cc
 	$(IVL_HOME)/iverilog-vpi -I../icarus/verilog/vvp $<
 
 run:
-	../src/gnucap -c verilog netlist-dkc.sp </dev/null
-
-run1:
-	../src/gnucap -a ../src/gnucap-icarus.so -c verilog netlist-dkc.sp </dev/null
-
-run2:
 	../../src/gnucap -a ../gnucap-icarus.so -c verilog netlist-dkc.sp </dev/null
-
-
 
 clean:
 	rm -f *.o
