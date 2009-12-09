@@ -1,0 +1,8 @@
+NEWS
+reverse order (newest first)
+
+2009-12-09
+plugin is changed according to gnucap-2009-12-07
+mostly modifications are related to changing 
+SIM:: to CKT_BASE::_sim->
+

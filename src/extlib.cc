@@ -44,7 +44,7 @@ void ExtLib::set_active(void *handle,double time)
   }
   next_time = time;
   if (time > now) {
-    SIM::new_event(time,this);
+    CKT_BASE::_sim->new_event(time);
   }
 }
 
@@ -147,12 +147,12 @@ double ExtSigTrCheck(intptr_t data,double dtime,
 
   if ('I' == xsig->iv) {
     SpcIvlCB *cbd = xsig->cb_data;
-    double time0 = SIM::time0,accpt_time = time0+dtime,*dp,nxt;
+    double time0 = CKT_BASE::_sim->_time0,accpt_time = time0+dtime,*dp,nxt;
 
     dp = (*cbd->eval)(cbd,accpt_time,CB_TRUNC,getVoltage,xsig,0);
     nxt = dp[2];
     if (nxt <= time0) {
-      dtime = SIM::_dtmin;
+      dtime = CKT_BASE::_sim->_dtmin;
     } else if (nxt < accpt_time) {
       dtime = accpt_time - nxt;
     }
@@ -164,7 +164,7 @@ double ExtSigTrCheck(intptr_t data,double dtime,
 void  ExtSigTrEval(intptr_t data,std::vector<DPAIR> *num_table,ELEMENT *d) {
   ExtSig *xsig = (ExtSig *)data;
   SpcIvlCB *cbd = xsig->cb_data;
-  double time0 = SIM::time0,*dp,nxt;
+  double time0 = CKT_BASE::_sim->_time0,*dp,nxt;
   xsig->d = d;
   dp  = (*cbd->eval)(cbd,time0,CB_LOAD,getVoltage,xsig,0),
   nxt = FixTable(dp,num_table,time0);

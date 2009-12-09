@@ -46,7 +46,7 @@ void EXT_TRANSIENT::first(){
     
 void EXT_TRANSIENT::accept(){
   TRANSIENT::accept();
-  ExtContSim("TRAN",time0); 
+  ExtContSim("TRAN",_sim->_time0); 
 }
 
 }

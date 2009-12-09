@@ -27,7 +27,6 @@
  */
 //testing=
 #include "u_lang.h"
-#include "globals.h"
 #include "e_elemnt.h"
 #include "m_interp.h"
 #include "bm.h"
@@ -188,17 +187,17 @@ void EVAL_BM_EXTPWL::tr_eval(ELEMENT* d)const
 TIME_PAIR EVAL_BM_EXTPWL::tr_review(COMPONENT* d)
 {
   if (_ext) {
-    double dt_s = SIM::_dtmin,
+    double dt_s = d->_sim->_dtmin,
            dt = ExtSigTrCheck(_ext,dt_s,
                        const_cast<std::vector<DPAIR>*>(&_num_table),d);
     if (dt < dt_s) {
-      d->_time_by.min_event(dt + SIM::time0);
+      d->_time_by.min_event(dt + d->_sim->_time0);
     }
   }
   if (d->is_source()) {
     ELEMENT* dd = prechecked_cast<ELEMENT*>(d);
     assert(dd);
-    double x = dd->_y[0].x + SIM::_dtmin * .01;
+    double x = dd->_y[0].x + d->_sim->_dtmin * .01;
     DPAIR here(x, BIGBIG);
     std::vector<DPAIR>::iterator begin = _num_table.begin();
     std::vector<DPAIR>::iterator end   = _num_table.end();

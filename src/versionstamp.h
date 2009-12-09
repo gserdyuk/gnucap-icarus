@@ -1,1 +1,1 @@
-#define VERSIONSTAMP "gnucap-icarus plugin v 1.1 2009-12-6"
+#define VERSIONSTAMP "gnucap-icarus plugin v 1.2 2009-12-9"
