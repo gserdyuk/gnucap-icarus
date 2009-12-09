@@ -26,6 +26,7 @@
 #include "vpi_priv.h"
 #include "extpwl.h"
 #include "e_compon.h"
+#include "e_elemnt.h" 
 
 class ExtBase {
  public:
@@ -83,7 +84,6 @@ class ExtLib : public ExtAPI , public COMPONENT {
   virtual std::string port_name(int)const {return "";}
 };
 
-class ELEMENT;
 class ExtSig : public ExtBase {
  public:
 # define EXT_SIG 2

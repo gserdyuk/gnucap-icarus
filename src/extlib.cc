@@ -101,18 +101,13 @@ ExtRef *bindExtSigInit(const string &so__data__sigpath,const char *src) {
   return ref;
 }
 
-/*
-double EVAL_BM_ACTION_BASE::voltage(ELEMENT *d) const {
-  return 0.0;
-}
-*/
-
 static int getVoltage(ExtSig *xsig,void *,double *ret) 
 {
+/* can remove this part
   EVAL_BM_ACTION_BASE *pwl = dynamic_cast<EVAL_BM_ACTION_BASE *>(xsig->cmpnt);
-
   if (pwl) ret[0] = pwl->voltage(xsig->d);
- 
+*/
+  ret[0] = xsig->d->tr_outvolts();
   return 1;
 }
 

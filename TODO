@@ -72,11 +72,15 @@ Code has to be fixed accordingly
 > that doesn't already have an access function probably has a 
 > reason for it being private.
 
+ a) get rid from "voltage" and node() 
+
 > to_string(long) .. I don't see why you need it.  Please explain.  
 > Is it left over from old stuff?  I'm not opposed to it if you 
 > really need it, but don't want to have extra stuff that is not 
 > used or tested.  It is likely that if it were included, that it 
 > would get purged in a Muntzing.
+
+b) decide about to_string(long)
 
 > s_tr.h virtuals.  ..  This is in the s_* hierarchy, and 
 > considered to be part of the transient plugin.  In the version 
@@ -85,6 +89,14 @@ Code has to be fixed accordingly
 > in the "precalc", "expand" and "tr_advance" functions, as part 
 > of the bm_extpwl.h ?
 
+c) move needed operations to precalc, expand, tr_advance
+
 > u_parameter.h: get_str() .. why not just use Get?
 
- 
+d) use Get, get rid from get_str()  
+
+results:
+DONE a) get rid from "voltage" and node()       
+     b) decide about to_string(long)
+     c) move needed operations to precalc, expand, tr_advance
+     d) use Get, get rid from get_str()  
