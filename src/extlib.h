@@ -32,6 +32,7 @@ class ExtBase {
  public:
   virtual int id() {return 0;}
   static void null_call() {}
+  virtual ~ExtBase(){}
 };
 
 class ExtAPI : public SpcDllData {
@@ -73,7 +74,7 @@ class ExtLib : public ExtAPI , public COMPONENT {
 
   static ExtLib *Sdd2El(SpcDllData *spd) {
     intptr_t p = (intptr_t)spd;
-    p -= offsetof(ExtLib,active);
+    p -= offsetof(ExtLib,active);   
     return (ExtLib *)p;
   }
 
