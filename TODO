@@ -100,4 +100,4 @@ DONE a) get rid from "voltage" and node()       ( tr_outvolts() used )
 DONE b) decide about to_string(long)            ( removed )
      c) move needed operations to precalc, 
         expand, tr_advance
-     d) use Get, get rid from get_str()  
+DONE d) use Get, get rid from get_str()         (Getptr moved in plugin)

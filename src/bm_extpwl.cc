@@ -262,12 +262,32 @@ bool EVAL_BM_EXTPWL::parse_numlist(CS& cmd)
   return cmd.gotit(start);
 }
 /*--------------------------------------------------------------------------*/
+bool Getptr(CS& cmd, const std::string& key, PARAMETER<intptr_t>* val)  // consumes key and optional "="
+{  // see for "iu_parameter.h" "Get" functions for example and reference
+  std::string str;  
+  if (cmd.umatch(key + ' ')) {
+    if (cmd.skip1b('=')) {
+      untested();
+      cmd >> str;
+    }else{
+      str = "";
+    }
+    *val=0;
+    *val=str;
+    return true;
+  }else {
+    str = "";
+    *val=str;
+    return false;
+    }
+}
+/*--------------------------------------------------------------------------*/
 bool EVAL_BM_EXTPWL::parse_params_obsolete_callback(CS& cmd)
 {
   return ONE_OF
     || Get(cmd, "delta",    &_delta)
     || Get(cmd, "smooth",   &_smooth)
-    || _ext.get_str(cmd, "external")
+    || Getptr(cmd, "external", &_ext) //  was _ext.get_str(cmd, "external") 
     || EVAL_BM_ACTION_BASE::parse_params_obsolete_callback(cmd)
     ;
 }
