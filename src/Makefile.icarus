@@ -8,8 +8,9 @@ LIB_H 	 = \
 extlib.h
 
 LIB_OBJS = ${LIB_SRCS:.cc=.o}
+GNUCAP_SRC=../../gnucap-a/gnucap/src
 
-INCPATH	 = -I../icarus/verilog/vvp -I/usr/local/include/iverilog -I../../src
+INCPATH	 = -I../icarus/verilog/vvp -I/usr/local/include/iverilog -I$(GNUCAP_SRC)
 CFLAGS   = -Wall -O2 -g -fPIC -UDEBUG $(INCPATH)
 CXXFLAGS = $(CFLAGS)
 LDFLAGS	 = -rdynamic -shared

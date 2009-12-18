@@ -1,0 +1,6 @@
+gnucap-icarus.so
+icarus/verilog/vvp/libvvp.so
+src/bm_extpwl.o
+src/extlib.o
+src/s_exttr.o
+src/versionvalues.o
