@@ -1,0 +1,1656 @@
+From 9730cd1b79977242ed8915d3eea7035d9bfe8ef9 Mon Sep 17 00:00:00 2001
+From: Gennady Serdyuk <gserdyuk@miami.localdomain>
+Date: Mon, 21 Dec 2009 02:26:15 +0200
+Subject: [PATCH] kevinc changes applied on top of adbaaa
+
+---
+ vpi/bindsigs.cc     |  484 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ vvp/Makefile.in     |   50 +++++-
+ vvp/extpwl.h        |  242 +++++++++++++++++++++++++
+ vvp/main.cc         |   15 ++
+ vvp/schedule.cc     |  353 ++++++++++++++++++++++++++++++++++++-
+ vvp/schedule.h      |    9 +
+ vvp/spice.cc        |  233 +++++++++++++++++++++++++
+ vvp/vpi_callback.cc |   10 +
+ vvp/vpi_priv.h      |    1 +
+ vvp/vvp_net.h       |    2 +
+ 10 files changed, 1384 insertions(+), 15 deletions(-)
+ create mode 100644 vpi/bindsigs.cc
+ create mode 100644 vvp/extpwl.h
+ create mode 100644 vvp/spice.cc
+
+diff --git a/vpi/bindsigs.cc b/vpi/bindsigs.cc
+new file mode 100644
+index 0000000..fbda215
+--- /dev/null
++++ b/vpi/bindsigs.cc
+@@ -0,0 +1,484 @@
++/*
++ * Copyright (c) 2008 True Circuits Inc.
++ *
++ * Author: Kevin Cameron
++ *
++ *    This source code is free software; you can redistribute it
++ *    and/or modify it in source code form under the terms of the GNU
++ *    General Public License as published by the Free Software
++ *    Foundation; either version 2 of the License, or (at your option)
++ *    any later version.
++ *
++ *    This program is distributed in the hope that it will be useful,
++ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *    GNU General Public License for more details.
++ *
++ *    You should have received a copy of the GNU General Public License
++ *    along with this program; if not, write to the Free Software
++ *    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
++ */
++
++# include  <stdio.h>
++# include  <stdlib.h>
++# include  <string.h>
++# include  <unistd.h>
++# include  <dlfcn.h>
++# include  <math.h>
++
++# include  "vpi_user.h"
++
++# include  "vpi_priv.h"
++# include  "vpi_user.h"
++# include  "acc_user.h"
++# define DECL__IVL_PARM_NM
++# include  "extpwl.h"
++
++static int bs_debug;
++
++static SpcIvlCB **(*get_lists)();
++
++extern double SimTimeD;
++
++extern "C" int BSgetPWR(vpiHandle argh,SpcIvlCB *cb) 
++{
++  struct __vpiScope *scp = (struct __vpiScope *)acc_handle_scope(argh);
++  for (; scp ; scp = scp->scope) {
++    vpiHandle  neth,net_iter;
++    eBLtype    bl = BL_REG;
++    for (net_iter = vpi_iterate(vpiReg, &scp->base)
++           ; bl >= BL_NET ; bl = (eBLtype)(bl-1),
++         net_iter = vpi_iterate(vpiNet, &scp->base)) {
++      if (net_iter) while (neth = vpi_scan(net_iter)) {
++        struct __vpiSignal *sgp = (struct __vpiSignal*)neth;
++        const char *nm = sgp->id.name;
++        int         i=2,l;
++        while (--i >= 0) {
++          if (0 == cb->pwr[i]
++                && 0 == strncmp(cb->pwr_nm[i],nm,l = strlen(cb->pwr_nm[i])) 
++                && ('\0' == nm[l] || 0 == strcmp("__i",&nm[l]))) {
++            for (SpcIvlCB  *ub = (*get_lists)()[bl]; ub ; ub = ub->next) {
++              if (ub->sig == sgp) {
++                cb->pwr[i] = ub; goto next;
++              }
++            }
++          }
++        }
++       next:;
++      }
++      if (cb->pwr[0] && cb->pwr[1]) {
++        if (bs_debug > 0) {
++          fprintf(stderr,"Power scope: ");
++          PrintInst(stderr,scp);
++          fprintf(stderr,"\n");
++        }
++        return 1;
++      }
++    } 
++  }
++
++  return 0;
++}
++
++static PLI_INT32 bindsigs_compiletf(PLI_BYTE8 *user_data)
++{
++  static int shown = 0;
++
++  if (!bs_debug) {
++    char *env = getenv("BS_DEBUG");
++    if (env && !(bs_debug = atoi(env))) {
++      bs_debug = 1;
++    } else {
++      bs_debug = -1;
++    }
++    SpcDebug = bs_debug;
++  }
++
++  if (bs_debug > 0 && !shown++) {
++    fprintf(stderr,"Bindsigs compiled in.\n");
++  }
++
++  SpcIvlCB::pBSgetPWR = BSgetPWR;
++
++  return 0;
++}
++
++static PLI_INT32 bindsigs_calltf(PLI_BYTE8 *user_data)
++{
++  if (!get_lists) {
++    get_lists = (typeof(get_lists))dlsym(0,"spicenets");
++    if (!get_lists) {
++      fprintf(stderr,"Bindsigs can't find support function: spicenets\n");
++      return -1;
++    }
++  }
++  
++  SpcIvlCB **lists = (*get_lists)();
++  
++  vpiHandle systfref, args_iter, argh, scope;
++  struct t_vpi_value argval;
++  char *value,*pwr[2];
++
++  pwr[0] = pwr[1] = 0;
++  
++  // Obtain a handle to the argument list
++  systfref  = vpi_handle(vpiSysTfCall, NULL);
++  args_iter = vpi_iterate(vpiArgument, systfref);
++  
++  // Grab the value of the first argument
++  while (argh = vpi_scan(args_iter)) {
++    
++    struct __vpiSignal *rfp = 0;
++    int                 reg = 1;
++    switch (argh->vpi_type->type_code) {
++    case vpiNet: reg = 0;
++    case vpiReg: rfp = (struct __vpiSignal*)argh;
++    }
++
++    assert(rfp);
++
++    struct __vpiScope *scope = (struct __vpiScope *)acc_handle_scope(argh),
++                      *up;
++
++    if (bs_debug > 0) {
++      fprintf(stderr,"Binding ");
++      PrintInst(stderr,scope);
++      fprintf(stderr,".%s",rfp->id.name);
++    }
++
++    SpcIvlCB *ub,**ubp = &lists[0];
++    
++    while (ub = *ubp) {
++      const char *spec = ub->spec,
++                 *name = rfp->id.name;
++      int   hier = 0;
++      while (*spec) if ('.' == *spec++) hier++;
++      if (hier) {
++        int ln = strlen(name),
++            ls = 0;
++        for (up = scope ;;) {
++          for (ls =0; spec-- > ub->spec && '.' != *spec; ls++);
++          if (!(ln == ls && (0 == strncmp(spec+1,name,ls)
++                             || ('_' == *name && 0 == hier)))) goto next;
++          if (hier-- <= 0) break;
++          if (name == up->name) {
++            up = up->scope;
++          } 
++          ln = strlen(name = up->name);
++        }
++        break; 
++      } else {
++        if (0 == strcmp(ub->spec,name)) {
++          break;
++        }
++      }
++     next:
++      ubp = &ub->next;
++    }
++
++    if (bs_debug > 0 && !ub) {
++      fprintf(stderr," failed, check external language declaration.\n");
++    }
++
++    assert(ub);
++
++    if (bs_debug > 0) {
++      fprintf(stderr," to %s\n",ub->spec);
++    }
++
++    rfp->ext_bound        = 1 + reg; // eBLtype
++    *ubp                  = ub->next;
++    ub->next              = lists[rfp->ext_bound];
++    lists[rfp->ext_bound] = ub;
++
++    ub->sig  = rfp;
++
++    __vpiScope *scp = rfp->within.scope;
++    vpiHandle prmh, prm_iter = vpi_iterate(vpiParameter, &scp->base);
++    if (prm_iter) {
++      struct __vpiRealVar *parm;
++      int    nml  = strlen(rfp->id.name),
++             i,p  = sizeof(ub->parm_nm)/sizeof(*ub->parm_nm),
++             pi,
++             mode = 0;
++      double defaults[p];
++      for (i = p; i-- > 0;) defaults[i] = nan("");
++      while (prmh = vpi_scan(prm_iter)) {
++        char *pnm = vpi_get_str(vpiName,prmh);
++        if (0 == strcmp(pnm,"mode")) {
++          argval.format = vpiIntVal;
++          vpi_get_value(prmh, &argval);
++          mode = argval.value.integer;
++        } else if ((pi=0,0 == strcmp(pnm,"power_lo")) ||
++                   (pi=1,0 == strcmp(pnm,"power_hi"))) {
++          argval.format = vpiStringVal;
++          vpi_get_value(prmh, &argval);
++          pwr[pi] = strdup(argval.value.str);
++        } else for (i = p; i-- > 0;) {
++          if (0 == strcmp(pnm,SpcIvlCB::parm_nm[i])) {
++            argval.format = vpiRealVal;
++            vpi_get_value(prmh, &argval);
++            defaults[i] = argval.value.real;
++          }
++        }
++      }
++      ub->mode = mode;
++      ub->set_parms(defaults);
++      prm_iter = vpi_iterate(vpiParameter, &scp->base);
++      while (prmh = vpi_scan(prm_iter)) {
++        char *pnm = vpi_get_str(vpiName,prmh);
++        if (0 == strncmp(pnm,rfp->id.name,nml)) {
++          const char *sub = pnm + nml;
++          if ('_' == *sub++) {
++            if (0 == strcmp(sub,"mode")) {
++              argval.format = vpiIntVal;
++              vpi_get_value(prmh, &argval);
++              ub->mode = argval.value.integer;
++            } else if ((pi=0,0 == strcmp(sub,"power_lo")) ||
++                       (pi=1,0 == strcmp(sub,"power_hi"))) {
++              argval.format = vpiStringVal;
++              vpi_get_value(prmh, &argval);
++              ub->pwr_nm[pi] = strdup(argval.value.str);
++            } else for (i = p; i-- > 0;) {
++              if (0 == strcmp(sub,ub->parm_nm[i])) {
++                argval.format = vpiRealVal;
++                vpi_get_value(prmh, &argval);
++                ub->parms()[i] = argval.value.real;
++              }
++            }
++          }
++        }
++      }
++      set_if_not(ub->lo,        ub->vss);
++      set_if_not(ub->hi,        ub->vdd);
++      set_if_not(ub->fall,      ub->rise);
++      set_if_not(ub->thrshld[0],((ub->hi + ub->lo)/2)/(ub->vdd - ub->vss));
++      set_if_not(ub->thrshld[0],0.5);
++      set_if_not(ub->thrshld[1],ub->thrshld[0]);
++      set_if_not(ub->last_value,ub->init_v);
++      set_if_not(ub->prec,      pow(10,scp->time_precision));
++
++      for (i = 2; --i >= 0;) {
++        if (!ub->pwr_nm[i]) ub->pwr_nm[i] = pwr[i] ? strdup(pwr[i])
++                                                   : ub->def_pwr(i);
++      }
++
++      // constrain first timestep
++      if (ub->coeffs[1] == ub->init_v) {
++        ub->coeffs[2] = SimTimeA + ub->prec/2;
++        ub->coeffs[3] = ub->fillEoT(4,ub->init_v);
++      } else {
++        ub->coeffs[2] = SimTimeA;
++        ub->coeffs[4] = SimTimeA + ub->prec/2;
++        ub->coeffs[5] = ub->fillEoT(6,ub->init_v);
++      }
++      if (3 == mode && !((0 == strncmp(ub->pwr_nm[0],rfp->id.name,3) ||
++                         (0 == strncmp(ub->pwr_nm[1],rfp->id.name,3))))) {
++        if (!BSgetPWR(argh,ub)) {
++            fprintf(stderr,"Power not found for: ");
++            PrintInst(stderr,scp);
++            fprintf(stderr,".%s\n",rfp->id.name);
++        } 
++      }
++    }
++   next_arg:;
++  }
++
++  free(pwr[0]);
++  free(pwr[1]);
++
++  return 0;
++}
++
++static void bindsigs_register()
++{
++  s_vpi_systf_data tf_data;
++  
++  tf_data.type      = vpiSysTask;
++  tf_data.tfname    = "$bindsigs";
++  tf_data.calltf    = bindsigs_calltf;
++  tf_data.compiletf = bindsigs_compiletf;
++  tf_data.sizetf    = 0;
++  tf_data.user_data = 0;
++  vpi_register_systf(&tf_data);
++}
++
++static PLI_INT32 sync_out_calltf(PLI_BYTE8 *user_data)
++{
++  if (!get_lists) return 0;
++
++  vpiHandle systfref, args_iter, argh;
++  struct t_vpi_value argval;
++  char *value;
++  
++  // Obtain a handle to the argument list
++  systfref  = vpi_handle(vpiSysTfCall, NULL);
++  args_iter = vpi_iterate(vpiArgument, systfref);
++  
++  // Grab the value of the first argument
++  argh = vpi_scan(args_iter);
++
++  struct __vpiSignal *rfp = 0;
++  int                 reg = 1;
++  switch (argh->vpi_type->type_code) {
++  case vpiNet: reg = 0;
++  case vpiReg: rfp = (struct __vpiSignal*)argh;
++  }
++  
++  assert(rfp);
++
++  argval.format = vpiIntVal;
++  vpi_get_value(argh, &argval);
++
++  SpcIvlCB *scan = (*get_lists)()[BL_NET];
++  double    v;
++  char     *fmt;
++  for (; scan; scan = scan->next) {
++    if (scan->sig == rfp) {
++      fmt = "Syncing net %s=%d\n"; goto found;
++    }
++  }
++  for (scan = get_lists()[BL_REG]; scan; scan = scan->next) {
++    if (scan->sig == rfp) {
++      fmt = "Syncing reg %s=%d\n"; goto found;
++    }
++  }
++
++  goto done;  
++
++ found:
++  switch (scan->mode) {
++  case 1:
++  case 3: {
++    scan->lo = scan->Pwr(0,0,BSgetPWR)->last_value;
++    scan->hi = scan->Pwr(1,0,BSgetPWR)->last_value;
++    if (1 == scan->mode) goto sync;
++  }
++  case 2:
++    if (!isnan(scan->coeffs[4])) { // check on ramp
++      int    s   = 0;
++      double now = SimTimeA;
++      while (now >= scan->coeffs[2+s]) { s += 2; }
++      double slew = scan->coeffs[3+s] - scan->coeffs[1+s];
++      if (0.0 == slew) {
++        slew = scan->coeffs[1+s] - ((scan->hi + scan->lo)/2);
++      }
++      if ((slew > 0) != argval.value.integer) {
++        scan->go2        = argval.value.integer;
++        scan->last_error = scan->last_time;
++        if (scan->reported = (bs_debug > 0)) {
++          fprintf(stderr,"Warning: PWL/logic mismatch on ");
++          PrintInst(stderr,rfp->within.scope);
++          fprintf(stderr,".%s (->%d @ %g)\n",
++                         rfp->id.name,argval.value.integer,now);
++          scan->dumpPWL(stderr,now);
++        }
++      } else if (scan->last_error >= 0.0) {
++        double dt = now-scan->last_error;
++        if (bs_debug > 0) {
++          fprintf(stderr,"Info: PWL OK ");
++          PrintInst(stderr,rfp->within.scope);
++          fprintf(stderr,".%s (->%d @ %g, dt: %g)\n",
++                         rfp->id.name,argval.value.integer,now,dt);
++          scan->dumpPWL(stderr,now);        
++        } else if (dt > scan->prec/2) {
++          fprintf(stderr,"Warning: PWL/logic mismatch on ");
++          PrintInst(stderr,rfp->within.scope);
++          fprintf(stderr,".%s (->%d @ %g for %g)\n",
++                         rfp->id.name,argval.value.integer,now-dt,dt);
++        }
++        scan->last_error = -1;
++      }
++      break;
++    }
++  default:
++  sync:
++    v = scan->lo + argval.value.integer * (scan->hi - scan->lo);
++    if (v != scan->coeffs[3]) {
++      double lv = scan->LastValue();
++      if (bs_debug > 0) {
++        fprintf(stderr,fmt,rfp->id.name,argval.value.integer);
++      }
++      scan->coeffs[0] = SimTimeA;
++      scan->coeffs[2] = SimTimeA + (lv < v ? scan->rise
++                                           : scan->fall);
++      scan->coeffs[1] = lv;
++      scan->coeffs[3] = v;
++
++      scan->fillEoT(4,v);
++    }
++    goto done;       
++  }
++
++ done:
++  // Cleanup and return
++  vpi_free_object(args_iter);
++  return 0;
++}
++
++static void sync_out_register()
++{
++  s_vpi_systf_data tf_data;
++
++  tf_data.type      = vpiSysTask;
++  tf_data.tfname    = "$sync_out";
++  tf_data.calltf    = sync_out_calltf;
++  tf_data.compiletf = 0;
++  tf_data.sizetf    = 0;
++  tf_data.user_data = 0;
++  vpi_register_systf(&tf_data);
++}
++
++static PLI_INT32 sync_in_calltf(PLI_BYTE8 *user_data)
++{
++  if (!get_lists) return 0;
++
++  vpiHandle systfref, args_iter, argh;
++  struct t_vpi_value argval;
++  char *value;
++  
++  // Obtain a handle to the argument list
++  systfref  = vpi_handle(vpiSysTfCall, NULL);
++  args_iter = vpi_iterate(vpiArgument, systfref);
++  
++  // Grab the value of the first argument
++  argh = vpi_scan(args_iter);
++
++  struct __vpiSignal *rfp = 0;
++  int                 reg = 1;
++  switch (argh->vpi_type->type_code) {
++  case vpiNet: reg = 0;
++  case vpiReg: rfp = (struct __vpiSignal*)argh; break;
++  }
++    
++  // if (!reg) rfp = findReg(rfp);
++
++  assert(rfp);
++
++  if (bs_debug > 0) {
++    fprintf(stderr,"Syncing %s\n",rfp->id.name);
++  }
++  // Cleanup and return
++  vpi_free_object(args_iter);
++  return 0;
++}
++
++static void sync_in_register()
++{
++  s_vpi_systf_data tf_data;
++
++  tf_data.type      = vpiSysTask;
++  tf_data.tfname    = "$sync_in";
++  tf_data.calltf    = sync_in_calltf;
++  tf_data.compiletf = 0;
++  tf_data.sizetf    = 0;
++  tf_data.user_data = 0;
++  vpi_register_systf(&tf_data);
++}
++
++extern "C" {
++  void (*vlog_startup_routines[])() = {bindsigs_register,
++                                       sync_out_register,
++                                       sync_in_register,
++                                       0};
++}
+diff --git a/vvp/Makefile.in b/vvp/Makefile.in
+index efffd61..ddef1c7 100644
+--- a/vvp/Makefile.in
++++ b/vvp/Makefile.in
+@@ -48,15 +48,33 @@ MAN = @MAN@
+ PS2PDF = @PS2PDF@
+ 
+ CPPFLAGS = -I. -I.. -I $(srcdir) -I$(srcdir)/.. -DVERSION='"$(VERSION)"' @CPPFLAGS@ @DEFS@
+-CXXFLAGS = -Wall @CXXFLAGS@
++CFLAGS = -Wall @CXXFLAGS@ $(CSHRDFLAGS)
++CXXFLAGS = $(CFLAGS)
++LDFLAGS_SO = @rdynamic@ -shared
+ LDFLAGS = @rdynamic@ @LDFLAGS@
+ LIBS = @LIBS@ @EXTRALIBS@
+ 
+ dllib=@DLLIB@
+ 
+-MDIR1 = -DMODULE_DIR1=\"$(libdir)/ivl$(suffix)/.\"
++MDIR1 = -DMODULE_DIR1=\"$(libdir)/ivl/@vpidir1@\"
++ifneq (x@vpidir2@,x)
++MDIR2 = -DMODULE_DIR2=\"$(libdir)/ivl/@vpidir2@\"
++endif
++
++ifdef VVP_SHARED
++#removed all
++else
+ 
+-all: dep vvp@EXEEXT@ libvpi.a
++ENTRY_OBJ=main.o
++SPICE_OBJ=spice.o
++EXES=$(bindir)/vvp@EXEEXT@ 
++ENTRY_OBJ_SHARED=main-shrd.o
++SPICE_OBJ_SHARED=spice-shrd.o
++all: dep vvp@EXEEXT@ libvpi.a libvvp.so
++SHARED_LIBS=$(libdir)/libvvp.so
++CSHRDFLAGS=-fPIC
++
++endif
+ 
+ clean:
+ 	rm -f *.o *~ parse.cc parse.cc.output parse.h lexor.cc tables.cc
+@@ -73,12 +91,19 @@ vpi_priv.o vpi_scope.o vpi_real.o vpi_signal.o vpi_tasks.o vpi_time.o \
+ vpi_vthr_vector.o vpip_bin.o vpip_hex.o vpip_oct.o \
+ vpip_to_dec.o vpip_format.o vvp_vpi.o
+ 
+-O = main.o parse.o parse_misc.o lexor.o arith.o array.o bufif.o compile.o \
++O = $(ENTRY_OBJ) parse.o parse_misc.o lexor.o arith.o array.o bufif.o compile.o \
++concat.o \
++dff.o extend.o npmos.o part.o reduce.o resolv.o sfunc.o stop.o symbols.o \
++ufunc.o codes.o \
++vthread.o schedule.o statistics.o tables.o udp.o vvp_island.o vvp_net.o \
++event.o logic.o delay.o words.o $(SPICE_OBJ) island_tran.o $V
++
++O_SHARED = $(ENTRY_OBJ_SHARED) parse.o parse_misc.o lexor.o arith.o array.o bufif.o compile.o \
+ concat.o \
+ dff.o extend.o npmos.o part.o reduce.o resolv.o sfunc.o stop.o symbols.o \
+ ufunc.o codes.o \
+ vthread.o schedule.o statistics.o tables.o udp.o vvp_island.o vvp_net.o \
+-event.o logic.o delay.o words.o island_tran.o $V
++event.o logic.o delay.o words.o $(SPICE_OBJ_SHARED) island_tran.o $V
+ 
+ ifeq (@WIN32@,yes)
+ # Under Windows (mingw) I need to make the ivl.exe in two steps.
+@@ -99,6 +124,12 @@ libvpi.a: libvpi.c
+ 
+ vvp@EXEEXT@: $O
+ 	$(CXX) $(LDFLAGS) -o vvp@EXEEXT@ $O $(LIBS) $(dllib)
++
++libvvp.so: $(O_SHARED)
++	$(CXX) $(LDFLAGS_SO) -o $@ $(O_SHARED) $(LIBS) $(dllib)
++
++$(libdir)/%.so: %.so
++
+ endif
+ 
+ dep:
+@@ -108,6 +139,10 @@ dep:
+ 	$(CXX) $(CPPFLAGS) $(MDIR1) $(MDIR2) $(CXXFLAGS) -MD -c $< -o $*.o
+ 	mv $*.d dep/$*.d
+ 
++%-shrd.o: %.cc
++	$(CXX) $(CPPFLAGS) $(MDIR1) $(MDIR2) $(CXXFLAGS) -DVVP_SHARED -MD -c $< -o $@
++	mv $*-shrd.d dep/$*-shrd.d
++
+ %.o: %.c
+ 	$(CC) $(CPPFLAGS) $(MDIR1) $(MDIR2) $(CFLAGS) -MD -c $< -o $*.o
+ 	mv $*.d dep/$*.d
+@@ -158,7 +193,7 @@ Makefile: $(srcdir)/Makefile.in ../config.status
+ config.h: $(srcdir)/config.h.in ../config.status
+ 	../config.status --header=$@
+ 
+-install: all installdirs $(bindir)/vvp$(suffix)@EXEEXT@ $(libdir)/libvpi$(suffix).a $(INSTALL_DOC)
++install: all installdirs $(bindir)/vvp$(suffix) $(libdir)/libvpi$(suffix).a $(INSTALL_DOC) $(libdir)/libvvp.so
+ 
+ $(bindir)/vvp$(suffix)@EXEEXT@: ./vvp@EXEEXT@
+ 	$(INSTALL_PROGRAM) ./vvp@EXEEXT@ $(DESTDIR)$(bindir)/vvp$(suffix)@EXEEXT@
+@@ -175,10 +210,13 @@ $(prefix)/vvp$(suffix).pdf: vvp.pdf
+ installdirs: $(srcdir)/mkinstalldirs
+ 	$(srcdir)/mkinstalldirs $(DESTDIR)$(bindir) $(DESTDIR)$(libdir) $(DESTDIR)$(INSTALL_DOCDIR)
+ 
++$(libdir)/libvvp.so : ./libvvp.so
++	$(INSTALL_PROGRAM) libvvp.so $(DESTDIR)$(libdir)/libvvp.so
+ 
+ uninstall: $(UNINSTALL32)
+ 	rm -f $(DESTDIR)$(bindir)/vvp$(suffix)@EXEEXT@
+ 	rm -f $(DESTDIR)$(libdir)/libvpi$(suffix).a
+ 	rm -f $(DESTDIR)$(mandir)/man1/vvp$(suffix).1 $(DESTDIR)$(prefix)/vvp$(suffix).pdf
++	rm -f $(DESTDIR)$(libdir)/libvvp.so
+ 
+ -include $(patsubst %.o, dep/%.d, $O)
+diff --git a/vvp/extpwl.h b/vvp/extpwl.h
+new file mode 100644
+index 0000000..ff67115
+--- /dev/null
++++ b/vvp/extpwl.h
+@@ -0,0 +1,242 @@
++/*
++ * Copyright (c) 2008 True Circuits Inc.
++ *
++ * Author: Kevin Cameron
++ *
++ *    This source code is free software; you can redistribute it
++ *    and/or modify it in source code form under the terms of the GNU
++ *    General Public License as published by the Free Software
++ *    Foundation; either version 2 of the License, or (at your option)
++ *    any later version.
++ *
++ *    This program is distributed in the hope that it will be useful,
++ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *    GNU General Public License for more details.
++ *
++ *    You should have received a copy of the GNU General Public License
++ *    along with this program; if not, write to the Free Software
++ *    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
++ */
++
++#include <dlfcn.h>
++
++extern "C" int so_main(int,char **);
++
++enum eCBmode { // !!! keep in sync with Spice
++    CB_LOAD = 0,
++    CB_TRUNC,
++    CB_ACCEPT
++};
++
++const double EndOfTimeD = 1e99; 
++
++template<int S> 
++struct SpiceCallback
++{
++    typedef double *(*SpiceCB)(SpiceCallback *,double,eCBmode,...);
++
++    double   coeffs[S];
++    SpiceCB  eval;
++    char    *spec;
++    void    *dll_ref;
++    void   (*set_active)(void *,void *,double time);
++
++    inline int Slots() {return S;}
++
++    void setCoeffs(double *cof) {
++        int t = S;
++        while (t-- > 0) coeffs[t] = cof[t];
++    }
++
++    inline double fillEoT(int t,double val = 0.0) {
++        assert(t < S);
++        while (t < S) {
++            coeffs[t++] = EndOfTimeD;
++            coeffs[t++] = val;
++        }
++        return val;
++    }
++
++    SpiceCallback(double val = 0.0,double dt0 = EndOfTimeD) {
++      coeffs[0]  = 0.0;
++      coeffs[1]  = val;
++      coeffs[2]  = dt0;
++      coeffs[3]  = val;
++      fillEoT(4,val);
++    }
++
++    void dumpPWL(FILE *fp = stderr,double now = 0.0);
++
++    inline void checkPWL(double now = 0.0,double end = 0.0,
++                         FILE *fp = stderr) {
++      for (int i = 2; i < S; i += 2) {
++        if (coeffs[i-2] > coeffs[i]) {
++            dumpPWL(fp);
++            assert(!"Bad waveform");
++        }
++        if (end > 0.0 && coeffs[i] >= end) { break; }
++      }
++    }
++};
++
++enum eBLtype {
++    BL_UNBOUND = 0,
++    BL_NET,
++    BL_REG,
++    BL_LAST
++};
++
++extern "C" void *bindnet(char *spec,char T,int *coeffs,
++                         void *,void (*set_active)(void *,void *,double));
++
++#ifdef __vpi_priv_H
++
++#define IVL_PWL_SLOTS 16 /* 8 pairs */
++
++struct SpcIvlCB : SpiceCallback<IVL_PWL_SLOTS> {
++    SpcIvlCB    *next,
++                *others;       // non-local drive (ring)
++    __vpiSignal *sig;          // boundary or driven signal
++
++    // Params - keep together (see below)
++    double       vss,vdd;
++    double       lo,hi;        // drive levels
++    double       thrshld[2];   // rising,falling
++    double       rise,fall;    // times
++    double       init_v;       // initial voltage
++    double       prec;         // local precision
++
++    double       last_time,
++                 last_value,
++                 last_error;
++    SpcIvlCB    *pwr[2];       // vss,vdd
++    const char  *pwr_nm[2];
++    char         set,          // value is known
++                 active,       // active driver of set
++                 non_local,    // > 0 => not boundary
++                 mode;         // 0 - discrete
++                               // 1 - ramp over NBA
++                               // 2 - sync event
++                               // 3 -  + tie to local vss/vdd
++    char         go2,          // error fix 
++                 reported;
++
++    static const char *parm_nm[]; // SAME ORDER as fields
++
++    inline double *parms() {return &vss;}
++    double *set_parms(double *);
++
++    SpcIvlCB(double dt0 = EndOfTimeD,double val = 0.0,
++             const char *nan_tag = "")
++     : SpiceCallback <IVL_PWL_SLOTS>(val,dt0) {
++      next       = 0;
++      sig        = 0;
++      active     = 0;
++      vss        = nan(nan_tag);
++      vdd        = nan(nan_tag);
++      hi         = nan(nan_tag);
++      lo         = nan(nan_tag);
++      thrshld[0] = nan(nan_tag);
++      thrshld[1] = nan(nan_tag);
++      rise       = nan(nan_tag);
++      fall       = nan(nan_tag);
++      init_v     = nan(nan_tag);
++      prec       = nan(nan_tag);
++      set        = 0;
++      others     = 0;
++      non_local  = 0;
++      mode       = 0;
++      last_time  = -1;
++      last_value = 0;
++      last_error = -1;
++      pwr[0]     = 0;
++      pwr[1]     = 0;
++      pwr_nm[0]  = 0;
++      pwr_nm[1]  = 0; 
++    }
++
++    typedef int (*pwr_fn)(vpiHandle argh,SpcIvlCB *);
++
++    static pwr_fn pBSgetPWR;
++
++    inline SpcIvlCB *Pwr(int i,const char *pfn_nm,pwr_fn pfn = 0) {
++        if (!pwr[i]) {
++            if (pfn_nm) {
++                pfn = (pwr_fn)dlsym(0,pfn_nm);
++            }
++            if (pfn || (pfn = pBSgetPWR)) {
++                vpi_mode_t saved = vpi_mode_flag;
++                vpi_mode_flag    = VPI_MODE_CALLTF;
++                (*pfn)((__vpiHandle*)sig,this);
++                vpi_mode_flag    = saved;
++            }
++            if (!pwr[i] && non_local) {
++                pwr[i] = next->pwr[i];
++            }
++            if (!pwr[i]) throw pfn;
++        } 
++        return pwr[i];
++    } 
++
++    inline const char *def_pwr(int i) {return i ? "vdd" : "vss";} 
++
++    inline double  Rise()      { if (isnan(rise) && non_local > 0) {
++                                     rise = next->rise;
++                                     assert(!isnan(rise)); }
++                                 return rise; }
++
++    inline double  Fall()      { if (isnan(fall) && non_local > 0) {
++                                     fall = next->fall;
++                                     assert(!isnan(fall)); }
++                                 return fall; }
++
++    inline double *Coeffs()    { return non_local > 0 ? next->coeffs
++                                                      : coeffs; }
++
++    inline double  LastValue() { return non_local > 0 ? next->last_value
++                                                     : last_value; }
++    inline double  LastTime()  { return non_local > 0 ? next->last_time
++                                                      : last_time; }
++};
++
++void PrintInst(FILE *fp,struct __vpiScope *scope);
++extern int SpcDebug;
++
++struct SpcDllData {
++    char   active;
++    double next_time;
++    void   (*activate)(SpcDllData *,SpcIvlCB *,double);
++
++    SpcDllData(void (*fn)(SpcDllData *,SpcIvlCB *,double))
++             : active(0), next_time(0.0), activate(fn) {}
++};
++
++void ActivateCB(double time,SpcIvlCB *);
++
++#ifdef DECL__IVL_PARM_NM
++
++inline void set_if_not(double &prm,double val) {
++    if (isnan(prm)) prm = val;
++}
++
++const char *SpcIvlCB::parm_nm[] = // SAME ORDER as fields above
++                           {"vss","vdd",
++                            "lo","hi",
++                            "thrsh0","thrsh1",
++                            "rise","fall",
++                            "init_v",
++                            "prec"};
++
++double *SpcIvlCB::set_parms(double *from) 
++{
++   int p = sizeof(parm_nm)/sizeof(*parm_nm);
++
++   while (p--)  parms()[p] = from[p];
++}
++
++#endif
++
++extern "C" SpcIvlCB **spicenets();
++
++#endif
+diff --git a/vvp/main.cc b/vvp/main.cc
+index a2879ad..115b791 100644
+--- a/vvp/main.cc
++++ b/vvp/main.cc
+@@ -196,7 +196,14 @@ const char*module_tab[64];
+ extern void vpi_mcd_init(FILE *log);
+ extern void vvp_vpi_init(void);
+ 
++#ifdef VVP_SHARED
++int vvp_master = 0;
++extern int VvpLoaded();
++extern "C" int so_main(int argc, char*argv[])
++#else
++int vvp_master = 1;
+ int main(int argc, char*argv[])
++#endif
+ {
+       int opt;
+       unsigned flag_errors = 0;
+@@ -207,6 +214,10 @@ int main(int argc, char*argv[])
+       extern void vpi_set_vlog_info(int, char**);
+       extern bool stop_is_finish;
+ 
++#ifdef VVP_SHARED
++      if (VvpLoaded()) return -1;
++#endif
++
+ #ifdef __MINGW32__
+ 	/* In the Windows world, we get the first module path
+ 	   component relative the location where the binary lives. */
+@@ -334,8 +345,10 @@ int main(int argc, char*argv[])
+ 
+       vvp_vpi_init();
+ 
++#ifndef VVP_SHARED
+ 	/* Make the extended arguments available to the simulation. */
+       vpi_set_vlog_info(argc-optind, argv+optind);
++#endif
+ 
+       compile_init();
+ 
+@@ -392,6 +405,7 @@ int main(int argc, char*argv[])
+ 	    vpi_mcd_printf(1, "Running ...\n");
+       }
+ 
++#ifndef VVP_SHARED
+ 
+       schedule_simulate();
+ 
+@@ -417,6 +431,7 @@ int main(int argc, char*argv[])
+ 	    vpi_mcd_printf(1, "    %8lu other events (pool=%lu)\n",
+ 			   count_gen_events, count_gen_pool());
+       }
++#endif
+ 
+       return vvp_return_value;
+ }
+diff --git a/vvp/schedule.cc b/vvp/schedule.cc
+index 27bacc2..40201ab 100644
+--- a/vvp/schedule.cc
++++ b/vvp/schedule.cc
+@@ -20,12 +20,14 @@
+ # include  "schedule.h"
+ # include  "vthread.h"
+ # include  "slab.h"
++# include  "vpi_priv.h"
+ # include  <new>
+ # include  <signal.h>
+ # include  <stdlib.h>
+ # include  <assert.h>
+-
++# include  <math.h>
+ # include  <stdio.h>
++# include  "extpwl.h"
+ 
+ unsigned long count_assign_events = 0;
+ unsigned long count_gen_events = 0;
+@@ -722,8 +724,257 @@ static void run_rosync(struct event_time_s*ctim)
+       }
+ }
+ 
+-void schedule_simulate(void)
++inline double getdtime(struct event_time_s *et)
++{
++  return et->delay * pow(10.0,vpip_get_time_precision());
++}
++
++double SimTimeD     = 0.0;
++double SimTimeA     = 0.0;
++double SimTimeDlast = 0.0;
++
++void schedule_assign_pv_sync(vvp_net_t *node,int lgc, double time)
++{
++  double        d_dly = time - SimTimeD;
++  int           i_dly = d_dly / pow(10.0,vpip_get_time_precision());
++  vvp_time64_t  dly(i_dly);
++  vvp_vector4_t val(1,lgc);
++  vvp_sub_pointer_t<vvp_net_t> ptr(node,0);
++  
++  schedule_assign_plucked_vector(ptr,dly,val,0,1);
++}
++
++static SpcIvlCB *reattach(SpcIvlCB **nodes,vvp_net_t *primary,
++			  vvp_net_ptr_t ptr)
++{
++  vvp_net_t     *cur;
++  vvp_net_ptr_t  next;
++
++  for (; cur = ptr.ptr(); ptr = next) {
++    int port = ptr.port();
++    next     = cur->port[port];
++    SpcIvlCB  *scn_n;
++    for (int l = BL_NET; l <= BL_REG ; l++) {
++      SpcIvlCB **scn_p  = &nodes[l];
++      for (; scn_n = *scn_p ; scn_p = &scn_n->next) {
++	if (scn_n->sig->node == cur) {
++	  SpcIvlCB  *sub    = new SpcIvlCB,
++                    *others = scn_n->others;
++          if (sub->others = others) { // starting ring
++	    others->others = sub;
++	  } else {
++	    scn_n->others = sub->others = sub;
++	  }	  
++	  sub->next      = scn_n;
++	  sub->mode      = scn_n->mode;
++	  sub->sig       = new __vpiSignal();
++	  sub->sig->node = primary;
++	  sub->non_local = 1;
++	  sub->active    = -1;
++	  return sub;
++	}
++      }
++    }
++    if (scn_n = reattach(nodes,primary,ptr.ptr()->out)) {
++      return scn_n;
++    }
++  }
++
++  return 0;
++}
++
++static PLI_INT32 extMarker(struct t_cb_data *cb)
+ {
++  return 0;
++}
++
++static void doExtPwl(struct event_s *nbas,struct event_time_s *et)
++{
++  struct event_s  *scan  = nbas;
++  SpcIvlCB       **nodes = spicenets();
++
++  static t_vpi_time never = {vpiSuppressTime};
++
++  while (scan) {
++    assign_vector4_event_s *v4 = dynamic_cast<assign_vector4_event_s *>(scan);
++    while (v4) {
++      SpcIvlCB            *scn_n;
++      vvp_net_t           *node    = v4->ptr.ptr();
++      vvp_fun_signal_base *sig_fun = dynamic_cast<vvp_fun_signal_base*>(node->fun);
++      __vpiCallback       *cb      = sig_fun->has_vpi_callback(extMarker);
++      if (cb) {
++	if (scn_n = (SpcIvlCB *)cb->cb_data.user_data) goto propagate;
++        goto next_nba;
++      }
++      for (scn_n = nodes[2]; scn_n ; scn_n = scn_n->next) {
++	if (scn_n->sig->node == node) {
++	 setup:
++          cb                     = new_vpi_callback();
++	  cb->cb_data.cb_rtn     = extMarker;
++	  cb->cb_data.user_data  = (char *)scn_n;
++	  cb->cb_data.value      = 0;
++	  cb->cb_data.time       = &never;
++	  sig_fun->add_vpi_callback(cb);          
++	 propagate:
++	  static vvp_vector4_t lgc1(1,true),lgc0(1,false),lgcx(1);
++          switch (scn_n->mode) {
++            case 1: {
++	      scn_n->coeffs[0] = SimTimeD;
++	   // scn_n->coeffs[1] = as is 
++	      scn_n->coeffs[2] = SimTimeD + getdtime(et);
++	      scn_n->coeffs[3] = scn_n->lo  
++	                          +  v4->val.eeq(lgc1)
++	                           * (scn_n->hi - scn_n->lo);
++	    } break;
++            case 3:
++	      scn_n->lo = scn_n->Pwr(0,"BSgetPWR")->last_value;
++	      scn_n->hi = scn_n->Pwr(1,"BSgetPWR")->last_value;
++            case 2: {
++	      int go2;
++	      if (v4->val.has_xz()) {
++		if (0 == SimTimeD) goto next_nba;
++		go2 = v4->val.eeq(lgcx) - 2;
++	      } else {
++		go2 = v4->val.eeq(lgc1);
++	      }
++	      double dt_abs = SimTimeD + getdtime(et);
++              double rft;
++              switch (go2) {
++	      case  1: rft = scn_n->Rise(); break;
++	      case  0: rft = scn_n->Fall(); break;
++     /* z */  case -2: scn_n->set       = -1;
++		       scn_n->active    = -1;
++		       scn_n->coeffs[6] = dt_abs; // for checks
++                       if (scn_n->others) {
++			 SpcIvlCB *scn_o = scn_n->others->next;
++			 for (; scn_o != scn_n->others ; scn_o = scn_o->others) {
++			   assert(scn_o->active <= 0);
++			 }
++		       }
++     /* x */  case -1: goto next_nba;
++	      }
++	      double rstart = dt_abs - (rft/2);
++              if (rstart < SimTimeA) {
++		  rstart = SimTimeA;
++	      }
++	      double rend    = rstart + rft;
++	      scn_n->set     = 1;
++              double lv      = scn_n->LastValue(),
++                     gv      = go2 ? scn_n->hi
++                                   : scn_n->lo,
++		     *coeffs = scn_n->Coeffs(),
++	  	     fv,
++		     split;
++	      int    s       = 0;
++	      if (coeffs != scn_n->coeffs && scn_n->active < 0) {
++		scn_n->setCoeffs(coeffs);
++	      }
++	      while (scn_n->LastTime() > scn_n->coeffs[2+s]) {
++		s += 2;
++	      }
++	      if (s) {
++		int i = 0;
++		for (; i + s < scn_n->Slots(); i++) {
++		  scn_n->coeffs[i] = scn_n->coeffs[i+s];
++		}
++		scn_n->fillEoT(i,scn_n->coeffs[i-1]);
++	      }
++	      int    off  = 0;
++	      double slew = nan(""),
++                     t2;
++              if (rstart >= scn_n->coeffs[0]) {
++		while (rstart > (t2 = scn_n->coeffs[2+off])) off += 2;
++		slew = (fv = scn_n->coeffs[3+off]) - scn_n->coeffs[1+off];
++		if (fv == gv) { // destination matches current 
++		  if (t2 < rend || 0.0 == slew) { // current arrives faster
++		    goto next_nba; // no change
++		  }
++		} else if (0.0 == slew) { // starting on flat
++		  goto tail;
++		}
++	       split:
++		split = (rstart - scn_n->coeffs[off])
++		                /((t2 = scn_n->coeffs[2+off]) - scn_n->coeffs[off]);
++		if (split >= 1.0) {
++		  if (1.0 == split) {
++		    lv = scn_n->coeffs[3+off];
++		  } else {
++		    assert(0);
++		  }
++		} else {
++		  lv = scn_n->coeffs[1+off] 
++		            + (split * (scn_n->coeffs[3+off] - scn_n->coeffs[1+off]));
++		  if (gv == fv && rend > t2) {
++		    goto next_nba; // no change
++		  }
++		}
++	      } else {
++		if (gv == lv) {
++		  if (gv == scn_n->coeffs[1]) {
++		    scn_n->fillEoT(2,gv);
++		    goto check;
++		  }
++		  fv = scn_n->coeffs[3];
++		  goto split;
++		}
++		off = -2;
++		goto tail;
++	      }
++            knee:
++	      scn_n->coeffs[3+off] = lv;
++            tail:
++	      scn_n->fillEoT(6+off,gv);
++	      scn_n->coeffs[5+off] = gv;
++	      assert(scn_n->coeffs[5+off] != scn_n->coeffs[3+off]);
++	      scn_n->coeffs[4+off] = rend;
++	      scn_n->coeffs[2+off] = rstart;
++	    check:
++	      scn_n->checkPWL();
++	      if (scn_n->others) {
++		SpcIvlCB *scn_o = scn_n->others->next;
++                for (; scn_o != scn_n->others ; scn_o = scn_o->others) {
++		  assert(scn_o == scn_n || !scn_o->active);
++		}
++		scn_n->active = 1;
++                scn_n->next->setCoeffs(scn_n->coeffs);
++	      } 
++	    } break;
++	  }
++          goto next_nba;
++	}
++      }
++      if (scn_n = reattach(nodes,node,v4->ptr)) {
++	goto setup;
++      }
++      cb                     = new_vpi_callback();
++      cb->cb_data.cb_rtn     = extMarker;
++      cb->cb_data.user_data  = 0;
++      cb->cb_data.value      = 0;
++      cb->cb_data.time       = &never;
++      sig_fun->add_vpi_callback(cb);
++      break;
++    }
++   next_nba:
++    scan = scan->next;
++    if (scan == nbas) break;
++  }
++}
++
++static double   SimDelayD = -1.0;
++static sim_mode SimState  = SIM_ALL;
++
++inline static sim_mode schedule_simulate_m(sim_mode mode)
++{
++      struct event_s      *cur  = 0;
++      struct event_time_s *ctim = 0;
++      double               d_dly;
++
++      switch (mode) {
++      case SIM_CONT0: if (ctim = sched_list) goto sim_cont0;
++	              goto done;
++      case SIM_CONT1: goto sim_cont1;
++      }
++
+       schedule_time = 0;
+ 
+       // Execute end of compile callbacks
+@@ -750,15 +1001,32 @@ void schedule_simulate(void)
+ 		  stop_handler(0);
+ 		  // You can finish from the debugger without a time change.
+ 		  if (!schedule_runnable) break;
+-		  continue;
++		  goto cycle_done;
+ 	    }
+ 
+ 	      /* ctim is the current time step. */
+-	    struct event_time_s* ctim = sched_list;
++            ctim = sched_list;
+ 
+ 	      /* If the time is advancing, then first run the
+ 		 postponed sync events. Run them all. */
+ 	    if (ctim->delay > 0) {
++	          switch (mode) {
++	          case SIM_CONT0:
++	          case SIM_CONT1:
++	          case SIM_INIT: d_dly = getdtime(ctim);
++			         if (d_dly > 0) {
++                                   doExtPwl(sched_list->nbassign,ctim);
++				   SimDelayD = d_dly; return SIM_CONT0; 
++		                  sim_cont0:
++				   double dly = getdtime(ctim),
++                                          te  = SimTimeDlast + dly;
++				   if (te > SimTimeA) {
++				     SimDelayD = te - SimTimeA;
++				     return SIM_PREM; 
++				   }
++ 				   SimTimeD  = SimTimeDlast + dly;
++			         }
++	          }
+ 
+ 		  if (!schedule_runnable) break;
+ 		  schedule_time += ctim->delay;
+@@ -785,8 +1053,24 @@ void schedule_simulate(void)
+ 			if (ctim->active == 0) {
+ 			      run_rosync(ctim);
+ 			      sched_list = ctim->next;
++			      switch (mode) {
++			      case SIM_CONT0:
++			      case SIM_CONT1:
++			      case SIM_INIT: 
++				
++				d_dly = getdtime(ctim);
++				if (d_dly > 0) {
++				  doExtPwl(sched_list->nbassign,ctim);
++				  SimDelayD = d_dly;
++				  delete ctim;
++				  return SIM_CONT1;
++		                 sim_cont1:
++                                  // SimTimeD += ???;
++				  goto cycle_done;
++				}
++			      }
+ 			      delete ctim;
+-			      continue;
++			      goto cycle_done;
+ 			}
+ 		  }
+ 	    }
+@@ -794,7 +1078,7 @@ void schedule_simulate(void)
+ 	      /* Pull the first item off the list. If this is the last
+ 		 cell in the list, then clear the list. Execute that
+ 		 event type, and delete it. */
+-	    struct event_s*cur = ctim->active->next;
++            cur = ctim->active->next;
+ 	    if (cur->next == cur) {
+ 		  ctim->active = 0;
+ 	    } else {
+@@ -804,11 +1088,62 @@ void schedule_simulate(void)
+ 	    cur->run_run();
+ 
+ 	    delete (cur);
++
++          cycle_done:;
++      }
++
++      if (SIM_ALL == mode) {
++
++	     signals_revert();
++
++        // Execute post-simulation callbacks
++        vpiPostsim();
+       }
+ 
++   done:
++      return SIM_DONE;
++}
++
++void schedule_simulate()
++{
++  schedule_simulate_m(SIM_ALL);
++}
+ 
+-      signals_revert();
++static SpcDllData *SpcControl;
+ 
+-      // Execute post-simulation callbacks
+-      vpiPostsim();
++void ActivateCB(double when,SpcIvlCB *cb)
++{
++  (*SpcControl->activate)(SpcControl,cb,when);
+ }
++
++extern "C" double startsim(char *analysis,SpcDllData *control)
++{
++  SimDelayD  = -1;
++  SpcControl = control;
++
++  if (0 == strcmp("TRAN",analysis)) {
++      SimState = schedule_simulate_m(SIM_INIT);
++  }
++
++  SimTimeDlast = SimTimeD;
++
++  return SimDelayD;
++} 
++
++extern "C" double contsim(char *analysis,double time)
++{
++  SimTimeA  = time;
++  SimDelayD = -1;
++
++  if (0 == strcmp("TRAN",analysis)) {
++    SimState = SIM_CONT0;
++    while (SimTimeDlast < time) {
++      SimState = schedule_simulate_m(SimState);
++      SimTimeDlast = SimTimeD;
++      if (SIM_PREM <= SimState) break;
++    }
++  }
++
++  return SimDelayD;
++} 
++
+diff --git a/vvp/schedule.h b/vvp/schedule.h
+index b0f7bea..9cea3b5 100644
+--- a/vvp/schedule.h
++++ b/vvp/schedule.h
+@@ -52,6 +52,10 @@ extern void schedule_assign_plucked_vector(vvp_net_ptr_t ptr,
+ 					   const vvp_vector4_t&val,
+ 					   unsigned adr, unsigned wid);
+ 
++extern void schedule_assign_pv_sync(vvp_net_t *node,
++				    int lgc,
++                                    double time);
++
+ extern void schedule_assign_array_word(vvp_array_t mem,
+ 				       unsigned word_address,
+ 				       unsigned off,
+@@ -115,6 +119,11 @@ struct vvp_gen_event_s
+  * This runs the simulator. It runs until all the functors run out or
+  * the simulation is otherwise finished.
+  */
++enum sim_mode {SIM_ALL,
++               SIM_INIT,SIM_CONT0,SIM_CONT1,
++               SIM_PREM,SIM_DONE};
++extern double SimTimeD, // time in digital
++              SimTimeA; // time in analog
+ extern void schedule_simulate(void);
+ 
+ /*
+diff --git a/vvp/spice.cc b/vvp/spice.cc
+new file mode 100644
+index 0000000..c0850da
+--- /dev/null
++++ b/vvp/spice.cc
+@@ -0,0 +1,233 @@
++/*
++ * Copyright (c) 2008 True Circuits Inc.
++ *
++ * Author: Kevin Cameron
++ *
++ *    This source code is free software; you can redistribute it
++ *    and/or modify it in source code form under the terms of the GNU
++ *    General Public License as published by the Free Software
++ *    Foundation; either version 2 of the License, or (at your option)
++ *    any later version.
++ *
++ *    This program is distributed in the hope that it will be useful,
++ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *    GNU General Public License for more details.
++ *
++ *    You should have received a copy of the GNU General Public License
++ *    along with this program; if not, write to the Free Software
++ *    Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
++ */
++
++# include  "config.h"
++# include  "parse_misc.h"
++# include  "compile.h"
++# include  "schedule.h"
++# include  "vpi_priv.h"
++# include  "vpi_user.h"
++# include  "acc_user.h"
++# include  "statistics.h"
++# include  "extpwl.h"
++# include  <stdio.h>
++# include  <stdlib.h>
++# include  <string.h>
++# include  <unistd.h>
++
++
++static SpcIvlCB *bnets[BL_LAST]; // unbound & bound lists
++
++extern "C" SpcIvlCB **spicenets()
++{
++  return bnets;
++}
++
++void PrintInst(FILE *fp,struct __vpiScope *scope)
++{
++  if (scope->scope) {
++    PrintInst(fp,scope->scope);
++    fputs(".",fp);
++  } 
++  fputs(scope->name,fp);
++}
++
++int SpcDebug;
++SpcIvlCB::pwr_fn SpcIvlCB::pBSgetPWR;
++
++double *EvalVPI(SpcIvlCB *cb,double sim_time,eCBmode mode,
++                int (*fn)(void *,...),void *handle,void *xtra)
++{
++  double data[4],
++         thresh;
++  switch (mode) {
++    case CB_LOAD: {
++      cb->checkPWL();
++    } break;
++    case CB_ACCEPT:
++    case CB_TRUNC:
++      if (fn) { // null current voltage probe
++        struct t_vpi_value argval;
++        argval.format = vpiIntVal;
++        vpi_get_value(&cb->sig->base,&argval);
++
++        int l,i   = (*fn)(handle,xtra,data), 
++            leave = cb->set;
++
++        switch (cb->mode) {
++        case 1: 
++        case 3: try {
++                  cb->lo = cb->Pwr(0,"BSgetPWR")->last_value;
++                  cb->hi = cb->Pwr(1,"BSgetPWR")->last_value;
++                } catch (...) {
++                  fprintf(stderr,"Error: power supplies not bound for conversion of %s\n",
++                          cb->spec);
++                  throw cb;
++                }
++        }
++
++        thresh = cb->lo;
++        if (argval.value.integer) { // falling
++          thresh += cb->thrshld[l=1] * (cb->hi - thresh);
++          if (data[0] < thresh) {l = 0; leave = 0;}
++        } else {                    // rising
++          thresh += cb->thrshld[l=0] * (cb->hi - thresh);
++          if (data[0] > thresh) {l = 1; leave = 0;}
++        }
++        
++        if (!leave) {
++          
++          double cross = sim_time,
++                 split;
++          
++          if (cb->last_time >= 0) {
++            double span = cb->last_value - data[0];
++            if (span > 0.0) {
++              split = (cb->last_value - thresh)/span;
++              if (split < 0.0) {
++                split = 0.0;
++                if (CB_ACCEPT == mode) {
++                  fprintf(stderr,
++                          "Warning: overran threshold on %s @ %g\n",
++                                                    cb->spec,sim_time);
++                }
++              }
++              cross = cb->last_time + 
++                              split * (sim_time - cb->last_time);
++            } else {
++              cross = cb->last_time;
++            }
++          }
++
++          switch (mode) {
++          case CB_TRUNC:
++            if (!isnan(cb->prec)) {
++              double tol = cb->prec/4;
++              cross += tol;
++              if (cross < sim_time) {
++                assert(cross > cb->last_time);
++                cb->coeffs[2] = cross;
++                cb->coeffs[3] = cb->fillEoT(4,cb->coeffs[0]);
++              }
++            }
++            break;
++          case CB_ACCEPT:
++            schedule_assign_pv_sync(cb->sig->node,l,cross);
++            ActivateCB(cross,cb);
++            (*cb->set_active)(cb->dll_ref,cb,sim_time);
++            cb->set       = 1;
++            cb->fillEoT(2,cb->coeffs[0]);
++          }
++        } 
++
++        if (CB_ACCEPT == mode) { 
++          cb->last_time  = sim_time;
++          cb->last_value = data[0];
++        }
++
++      } else { // voltage
++
++        if (CB_ACCEPT == mode) { 
++          cb->last_time = sim_time;
++          int    t = 0;
++          while (cb->coeffs[t+2] < sim_time) t += 2;
++          double split = (sim_time - cb->coeffs[t])
++                                 /(cb->coeffs[t+2] - cb->coeffs[t]);
++          cb->last_value = cb->coeffs[t+1] 
++                             + split * (cb->coeffs[t+3] - cb->coeffs[t+1]);
++          if (cb->last_error >= 0.0) {
++            double dt = sim_time-cb->last_error;
++            if (dt > cb->prec && !cb->reported) {
++              cb->reported = 1;
++              fprintf(stderr,
++                      "Warning: possible PWL/logic mismatch on %s @ %g\n",
++                                                    cb->spec,sim_time-dt);
++              // schedule_assign_pv_sync(cb->sig->node,cb->go2,SimTimeD);
++              // ActivateCB(SimTimeD,cb);
++            }
++          }
++        }
++      }
++  }
++
++  return cb->coeffs;
++}
++
++
++int VvpLoaded()
++{
++    static int loaded = 0;
++    int l = loaded;
++    loaded = 1;
++    return l;
++}
++
++extern "C" void *bindnet(char *spec, char T, int *slots, void *dll_ref,
++                         void (*set_active)(void *,void *,double))
++{
++    char *sig = spec,
++          des[2000], *dp = des;
++    int   sts = 0;
++
++    while (*sig && *sig != ':') { *dp++ = *sig++; }
++
++    if (*sig++) {
++      *dp = '\0';
++    } else {
++      sig = spec;
++    }
++
++#ifdef VVP_SHARED
++    if (!VvpLoaded()) {
++      char *argv[] = {"libvvp.so","-M.","-mbindsigs",*des ? des : 0, 0};
++      sts = so_main(*des ? 4 : 3, argv);
++    }
++#endif
++
++    SpcIvlCB *cb   = new SpcIvlCB(1e-15);
++    cb->eval       = (SpcIvlCB::SpiceCB)EvalVPI;
++    cb->spec       = strdup(sig);
++    cb->dll_ref    = dll_ref;
++    cb->set_active = set_active;
++
++    *slots = cb->Slots();
++
++    cb->next          = bnets[BL_UNBOUND];
++    bnets[BL_UNBOUND] = cb;
++
++    return cb;
++}
++
++extern "C" void endsim()
++{
++
++} 
++
++template<int S>
++void SpiceCallback<S>::dumpPWL(FILE *fp,double now) {
++  for (int i = 0; i < S ; i += 2) {
++    fprintf(fp,"%8g\t%8g %c\n",coeffs[i],coeffs[i+1],
++                               now < coeffs[i] ? '+' : '-');
++    if (EndOfTimeD == coeffs[i]) break;
++  }
++}
++
++template struct SpiceCallback<IVL_PWL_SLOTS>;
+diff --git a/vvp/vpi_callback.cc b/vvp/vpi_callback.cc
+index 4ddc08d..ddb9d3a 100644
+--- a/vvp/vpi_callback.cc
++++ b/vvp/vpi_callback.cc
+@@ -515,6 +515,16 @@ void vvp_vpi_callback::add_vpi_callback(__vpiCallback*cb)
+       vpi_callbacks_ = cb;
+ }
+ 
++__vpiCallback *vvp_vpi_callback::has_vpi_callback(PLI_INT32(* cb_rtn)(struct t_cb_data *cb))
++{
++  struct __vpiCallback *cur = vpi_callbacks_;
++  
++  for (; cur ; cur = cur->next) {
++    if (cb_rtn == cur->cb_data.cb_rtn) return cur;
++  }
++  return 0;
++}
++
+ /*
+  * A vvp_fun_signal uses this method to run its callbacks whenever it
+  * has a value change. If the cb_rtn is non-nil, then call the
+diff --git a/vvp/vpi_priv.h b/vvp/vpi_priv.h
+index d8d6305..94c0e9f 100644
+--- a/vvp/vpi_priv.h
++++ b/vvp/vpi_priv.h
+@@ -223,6 +223,7 @@ struct __vpiSignal {
+       unsigned signed_flag  : 1;
+       unsigned isint_       : 1; // original type was integer
+       unsigned is_netarray  : 1; // This is word of a net array
++      unsigned ext_bound    : 2; // Bound to an external signal
+ 	/* The represented value is here. */
+       vvp_net_t*node;
+ };
+diff --git a/vvp/vvp_net.h b/vvp/vvp_net.h
+index e1bca9d..a2e6d2b 100644
+--- a/vvp/vvp_net.h
++++ b/vvp/vvp_net.h
+@@ -1197,6 +1197,8 @@ class vvp_vpi_callback {
+ 
+       virtual void get_value(struct t_vpi_value*value) =0;
+ 
++      __vpiCallback *has_vpi_callback(PLI_INT32(* cb_rtn)(struct t_cb_data *cb));
++
+     private:
+       struct __vpiCallback*vpi_callbacks_;
+ };
+-- 
+1.5.5.6
+

@@ -1,0 +1,10 @@
+patch sets.
+
+patch to icarus verilog to be used in gnucap-icarus cosimulation plugin
+
+0001-changes-applied-on-top-of-adbaaa.patch
+has to be applied to commit "adbaaa9352b110848766749791046967a194ac92"
+dated 2008-12-20
+
+that information has to be sufficient to rebase patchset to newer releasses of icarus verilog
+
